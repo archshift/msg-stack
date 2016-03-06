@@ -1,25 +1,45 @@
 package main
 
-import "bufio"
-// import "flag"
-import "fmt"
-// import "hash/crc32"
-import "net"
-import "os"
+import (
+	"bufio"
+	// "flag"
+	"fmt"
+	// "hash/crc32"
+	"net"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
 
-func program_pb() {
-	
+const programVersion = 0
+
+type NetOp uint16
+
+const (
+	opPop NetOp = iota
+	opPush
+)
+
+type NetHeader struct {
+	version uint32
+	op      NetOp
 }
 
-func program_pop() {
+func ProgramPb() {
 
 }
 
-func program_push() {
+func ProgramPop() {
+
+}
+
+func ProgramPush() {
 	scanner := bufio.NewScanner(os.Stdin)
 	conn, err := net.Dial("tcp", "localhost:8080")
 	writer := bufio.NewWriter(conn)
-	
+
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", err.Error())
 	}
@@ -28,58 +48,109 @@ func program_push() {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Writing %d bytes: %s\n", nn, err.Error())
 		}
+		writer.WriteRune('\n')
 		writer.Flush()
 	}
 }
 
-func handle_connection(conn net.Conn) {
-	reader := bufio.NewReader(conn)
-	writer := bufio.NewWriter(os.Stdout)
-	n, err := reader.WriteTo(writer)
-	
+func MakeFilename(dirname string, timestamp time.Time) string {
+	timestampStr := strconv.FormatInt(timestamp.Unix(), 10)
+
+	dir, err := os.Open(dirname)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Reading %d bytes: %s\n", n, err.Error())
+		fmt.Fprintf(os.Stderr, "Opening dir %s: %s\n", dirname, err.Error())
+		panic("")
 	}
-	
+	defer dir.Close()
+
+	dirChildren, err := dir.Readdirnames(0)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Reading dir %s: %s\n", dirname, err.Error())
+		panic("")
+	}
+
+	var highestNum int
+	for index := range dirChildren {
+		if strings.HasPrefix(dirChildren[index], timestampStr) {
+			fileNumStr := strings.SplitN(dirChildren[index], "_", 2)[1]
+			n, err := strconv.ParseInt(fileNumStr, 10, 32)
+			if err == nil && int(n) > highestNum {
+				highestNum = int(n)
+			}
+		}
+	}
+
+	return fmt.Sprintf("%s/%s_%d", dirname, timestampStr, highestNum+1)
+}
+
+func HandleConnection(conn net.Conn, dirMutex *sync.Mutex) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "Could not handle connection!\n")
+		}
+	}()
+
+	var file *os.File
+	var err error
+	func() {
+		dirMutex.Lock()
+		defer dirMutex.Unlock()
+
+		file, err = os.Create(MakeFilename(".", time.Now()))
+		if err != nil {
+			panic("")
+		}
+	}()
+
+	writer := bufio.NewWriter(file)
+	reader := bufio.NewReader(conn)
+	_, err = reader.WriteTo(writer)
+
+	if err != nil {
+		panic("")
+	}
+
 	writer.Flush()
 }
 
-func program_serve() {
+func ProgramServe() {
 	ln, err := net.Listen("tcp", ":8080")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", err.Error())
 	}
+
+	dirMutex := &sync.Mutex{}
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s\n", err.Error())
 		}
-		go handle_connection(conn)
+		go HandleConnection(conn, dirMutex)
 	}
 }
 
-func select_program(program_name string) {
-	switch program_name {
+func SelectProgram(programName string) {
+	switch programName {
 	case "pb":
-		program_pb()
+		ProgramPb()
 	case "pop":
-		program_pop()
+		ProgramPop()
 	case "push":
-		program_push()
+		ProgramPush()
 	case "serve":
-		program_serve()
+		ProgramServe()
 	}
 }
 
 func main() {
-	var program_name string
+	var programName string
 
 	if len(os.Args) < 2 {
 		fmt.Println("Insert help message here!")
 		return
 	} else {
-		program_name = os.Args[1]
+		programName = os.Args[1]
 	}
 
-	select_program(program_name)
+	SelectProgram(programName)
 }
