@@ -1,15 +1,15 @@
 package main
 
 import (
-    "bufio"
-    "encoding/binary"
-    "fmt"
-    "net"
-    "os"
-    "strconv"
-    "strings"
-    "sync"
-    "time"
+	"bufio"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
 )
 
 func MakeFilename(dirname string, timestamp time.Time) string {
@@ -42,34 +42,42 @@ func MakeFilename(dirname string, timestamp time.Time) string {
 	return fmt.Sprintf("%s/%s_%d", dirname, timestampStr, highestNum+1)
 }
 
-func HandleConnectionPop(cReader *bufio.Reader, cWriter *bufio.Writer, dirMutex *sync.Mutex) error {
-    return nil;
+func HandleConnectionPop(rx RxReader, responseTx TxWriter, dirMutex *sync.Mutex) error {
+	return nil
 }
 
-func HandleConnectionPush(cReader *bufio.Reader, cWriter *bufio.Writer, dirMutex *sync.Mutex) error {
-    var err error
+func HandleConnectionPush(rx RxReader, responseTx TxWriter, dirMutex *sync.Mutex) error {
+	var err error
 
-    var file *os.File
+	var file *os.File
 	func() {
 		dirMutex.Lock()
 		defer dirMutex.Unlock()
 
 		file, err = os.Create(MakeFilename(".", time.Now()))
 	}()
-    if err != nil {
-        return err
-    }
-    defer file.Close()
-
-	writer := bufio.NewWriter(file)
-	_, err = cReader.WriteTo(writer)
-
 	if err != nil {
 		return err
 	}
+	defer file.Close()
+
+	// Start transfer read loop
+	writer := bufio.NewWriter(file)
+	for {
+		reader, err := rx.NextData()
+		if err == io.EOF {
+			break
+		} else if err != nil {
+			return err
+		}
+
+		if _, err := writer.ReadFrom(reader); err != nil {
+			return err
+		}
+	}
 
 	writer.Flush()
-    return nil
+	return nil
 }
 
 func HandleConnection(conn net.Conn, dirMutex *sync.Mutex) {
@@ -79,25 +87,24 @@ func HandleConnection(conn net.Conn, dirMutex *sync.Mutex) {
 		}
 	}()
 
-    reader := bufio.NewReader(conn)
-    writer := bufio.NewWriter(conn)
-    var err error
+	rx := NewRxReader(conn)
+	tx := NewTxWriter(conn)
 
-    var netHeader NetHeader
-    err = binary.Read(reader, binary.BigEndian, &netHeader)
-    if err != nil {
-        panic(err.Error())
-    }
+	netHeader, extraData, err := rx.ReadHeader()
+	if err != nil {
+		panic(err.Error())
+	}
+	_ = extraData
 
-    switch netHeader.Op {
-        case opPop:
-            err = HandleConnectionPop(reader, writer, dirMutex)
-        case opPush:
-            err = HandleConnectionPush(reader, writer, dirMutex)
-    }
-    if err != nil {
-        panic(err.Error())
-    }
+	switch netHeader.Op {
+	case opStartPop:
+		err = HandleConnectionPop(rx, tx, dirMutex)
+	case opStartPush:
+		err = HandleConnectionPush(rx, tx, dirMutex)
+	}
+	if err != nil {
+		panic(err.Error())
+	}
 }
 
 func ProgramServe() {
